@@ -1,0 +1,44 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ── Environments ──────────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env
+ENV/
+
+# ── Secrets (NEVER commit these) ──────────────────────────────────────────────
+.env
+.env.local
+.env.production
+secrets.toml
+.streamlit/secrets.toml
+
+# ── RAG vector database (local, user-specific) ────────────────────────────────
+.chroma_db/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Test artefacts ────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Streamlit cache ───────────────────────────────────────────────────────────
+.streamlit/
