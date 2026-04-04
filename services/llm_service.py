@@ -13,6 +13,7 @@
 import os
 import re
 from typing import List, Dict, Optional, Tuple
+import streamlit as st
 
 try:
     from groq import Groq
@@ -30,10 +31,9 @@ except ImportError:
 _client: Optional[object] = None
 
 def _get_client():
-    """Lazily initialise the Groq client. Returns None if unavailable."""
     global _client
     if _client is None and GROQ_AVAILABLE:
-        api_key = os.getenv("GROQ_API_KEY", "")
+        api_key = st.secrets["GROQ_API_KEY"]
         if api_key:
             try:
                 _client = Groq(api_key=api_key)
