@@ -2,11 +2,13 @@
 # tests/test_ranking_service.py
 #
 # Unit tests for the video ranking engine.
-# Run with: pytest tests/
+# Run with: pytest tests/ -v
 # ══════════════════════════════════════════════════════════════════════════════
 
 import sys
 import os
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.ranking_service import rank_video, build_explanation, _parse_duration
@@ -37,7 +39,6 @@ def test_rank_video_high_relevance():
         "views":    "1.2M",
     }
     score, breakdown, reasons = rank_video(video, "python", "Beginner")
-    # One 4-letter keyword match = 8 + level = 25 + duration = 20 + pop ≈ 55
     assert score > 40, f"Highly relevant beginner Python video should score > 40, got {score}"
     assert breakdown["topic_relevance"] > 0
     assert breakdown["level_match"] > 0
@@ -73,6 +74,35 @@ def test_rank_video_no_info():
     assert score == 0
     assert reasons == []
 
+def test_rank_video_returns_three_values():
+    """rank_video must always return a 3-tuple."""
+    video = {"title": "Some video", "desc": "some desc", "duration": "10:00", "views": "10K"}
+    result = rank_video(video, "python", "Beginner")
+    assert len(result) == 3
+
+def test_rank_video_intermediate_duration():
+    """Intermediate level should reward 10-50 min videos."""
+    video = {
+        "title":    "React Hooks Intermediate Tutorial",
+        "desc":     "hooks useState useEffect intermediate explained",
+        "duration": "30:00",
+        "views":    "200K",
+    }
+    score, breakdown, _ = rank_video(video, "react", "Intermediate")
+    assert breakdown["duration_fit"] > 0
+
+def test_rank_video_advanced_duration_too_short():
+    """A 5-min video should score low on duration_fit for Advanced level."""
+    video = {
+        "title":    "Neural Networks Advanced",
+        "desc":     "advanced neural networks deep learning",
+        "duration": "5:00",
+        "views":    "100K",
+    }
+    _, breakdown, _ = rank_video(video, "neural networks", "Advanced")
+    # Short video is not ideal for Advanced learners
+    assert breakdown["duration_fit"] < 15
+
 
 # ── build_explanation ─────────────────────────────────────────────────────────
 
@@ -88,6 +118,8 @@ def test_build_explanation_fallback():
     explanation = build_explanation(video, "python", "Beginner", [], breakdown)
     assert len(explanation) > 0
 
-
-# ── Required for duration test ────────────────────────────────────────────────
-import pytest
+def test_build_explanation_returns_string():
+    video     = {"title": "SQL JOINs tutorial", "duration": "20:00"}
+    breakdown = {"weak_boost": 0, "level_match": 25, "topic_relevance": 30}
+    result = build_explanation(video, "SQL", "Intermediate", [], breakdown)
+    assert isinstance(result, str)

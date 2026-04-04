@@ -7,11 +7,14 @@
 #   - One private _call() function handles all API communication
 #   - All prompts are strings built in dedicated functions — never in UI files
 #   - Every call has a fallback message — the app never crashes on LLM failure
+#   - Exponential backoff retry on rate limits
+#   - Input validation guards against prompt injection
 #   - parse_* functions are pure (no I/O) and fully testable
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
 import re
+import time
 from typing import List, Dict, Optional, Tuple
 import streamlit as st
 
@@ -27,13 +30,89 @@ try:
 except ImportError:
     pass
 
-# ── Client singleton ──────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INPUT VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+MAX_TOPIC_LENGTH     = 200
+MAX_ANSWER_LENGTH    = 5000
+MAX_CHAT_LENGTH      = 1000
+
+_BLOCKED_PATTERNS = [
+    "ignore previous instructions",
+    "ignore all previous",
+    "forget your instructions",
+    "you are now",
+    "act as if",
+    "disregard all",
+    "<script",
+    "javascript:",
+    "drop table",
+    "'; drop",
+    "prompt injection",
+]
+
+
+def validate_topic(text: str) -> Tuple[bool, str]:
+    """
+    Validate a topic input string.
+    Returns (is_valid, cleaned_text_or_error_message).
+    """
+    if not text or not text.strip():
+        return False, "Topic cannot be empty."
+    cleaned = text.strip()
+    if len(cleaned) > MAX_TOPIC_LENGTH:
+        return False, f"Topic too long — max {MAX_TOPIC_LENGTH} characters."
+    lower = cleaned.lower()
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern in lower:
+            return False, "Invalid input detected. Please enter a valid topic."
+    return True, cleaned
+
+
+def validate_answer(text: str) -> Tuple[bool, str]:
+    """
+    Validate a free-text answer input.
+    Returns (is_valid, cleaned_text_or_error_message).
+    """
+    if not text or not text.strip():
+        return False, "Answer cannot be empty."
+    cleaned = text.strip()
+    if len(cleaned) > MAX_ANSWER_LENGTH:
+        return False, f"Answer too long — max {MAX_ANSWER_LENGTH} characters."
+    lower = cleaned.lower()
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern in lower:
+            return False, "Invalid input detected."
+    return True, cleaned
+
+
+def validate_chat_input(text: str) -> Tuple[bool, str]:
+    """Validate a chat message."""
+    if not text or not text.strip():
+        return False, "Message cannot be empty."
+    cleaned = text.strip()
+    if len(cleaned) > MAX_CHAT_LENGTH:
+        return False, f"Message too long — max {MAX_CHAT_LENGTH} characters."
+    lower = cleaned.lower()
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern in lower:
+            return False, "Invalid input detected."
+    return True, cleaned
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLIENT SINGLETON
+# ══════════════════════════════════════════════════════════════════════════════
+
 _client: Optional[object] = None
+
 
 def _get_client():
     global _client
     if _client is None and GROQ_AVAILABLE:
-        api_key = st.secrets["GROQ_API_KEY"]
+        api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY", "")
         if api_key:
             try:
                 _client = Groq(api_key=api_key)
@@ -42,7 +121,9 @@ def _get_client():
     return _client
 
 
-# ── Core LLM call ─────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CORE LLM CALL — with retry + backoff
+# ══════════════════════════════════════════════════════════════════════════════
 
 _DEFAULT_SYSTEM = (
     "You are Learnify — a precise, structured academic tutor. "
@@ -50,64 +131,108 @@ _DEFAULT_SYSTEM = (
     "level, and goal. Use clear markdown with headings and real examples."
 )
 
+
+def _fallback(reason: str = "unknown") -> str:
+    """Return a user-friendly error message based on failure reason."""
+    messages = {
+        "no_client": (
+            "⚠️ AI service not configured.\n\n"
+            "**Fix:** Add your `GROQ_API_KEY` to `.env` or Streamlit secrets.\n\n"
+            "*Get a free key at console.groq.com*"
+        ),
+        "auth": (
+            "🔑 Invalid API key.\n\n"
+            "**Fix:** Check your `GROQ_API_KEY` in `.env` or Streamlit secrets.\n\n"
+            "*Get a free key at console.groq.com*"
+        ),
+        "rate_limit": (
+            "⏳ Rate limit reached — please wait 30 seconds and try again.\n\n"
+            "**Your data is saved** — nothing was lost."
+        ),
+        "connection": (
+            "🌐 Connection error — check your internet and try again.\n\n"
+            "**Your data is saved** — nothing was lost."
+        ),
+        "unknown": (
+            "⚠️ The AI service is temporarily unavailable.\n\n"
+            "**What you can do:**\n"
+            "- Wait 30 seconds and try again\n"
+            "- Check your GROQ_API_KEY\n"
+            "- Your data is saved — nothing is lost\n\n"
+            "*This is usually a temporary rate limit or network issue.*"
+        ),
+    }
+    return messages.get(reason, messages["unknown"])
+
+
 def _call(
     prompt: str,
     max_tokens: int = 1400,
     temperature: float = 0.4,
     system: Optional[str] = None,
+    max_retries: int = 3,
 ) -> str:
     """
     Send a prompt to Groq and return the text response.
-    Returns a user-friendly fallback string on any failure.
+    - Retries up to max_retries times on rate limit errors (exponential backoff)
+    - Returns a user-friendly fallback string on any failure
+    - Never raises an exception — the app always stays alive
     """
     client = _get_client()
     if not client:
-        return _fallback()
+        return _fallback("no_client")
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system or _DEFAULT_SYSTEM},
-                {"role": "user",   "content": prompt},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return response.choices[0].message.content.strip()
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system or _DEFAULT_SYSTEM},
+                    {"role": "user",   "content": prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content.strip()
 
-    except Exception as e:
-        err = str(e).lower()
-        if "rate" in err:
-            return "⏳ Rate limit hit — please wait a moment and try again."
-        if "auth" in err or "api" in err:
-            return "🔑 API key issue — check your GROQ_API_KEY in .env or Streamlit secrets."
-        return _fallback()
+        except Exception as e:
+            err = str(e).lower()
 
+            # Rate limit — wait with exponential backoff and retry
+            if "rate" in err or "429" in err or "too many" in err:
+                if attempt < max_retries - 1:
+                    wait_seconds = 2 ** attempt  # 1s → 2s → 4s
+                    time.sleep(wait_seconds)
+                    continue
+                return _fallback("rate_limit")
 
-def _fallback() -> str:
-    return (
-        "⚠️ The AI service is temporarily unavailable.\n\n"
-        "**What you can do:**\n"
-        "- Check your GROQ_API_KEY in .env / Streamlit secrets\n"
-        "- Wait 30 seconds and try again\n"
-        "- Your data is saved — nothing is lost\n\n"
-        "*This is usually a temporary rate limit or network issue.*"
-    )
+            # Auth / key issue — no point retrying
+            if "auth" in err or "401" in err or "api_key" in err or "invalid key" in err:
+                return _fallback("auth")
+
+            # Connection / timeout — retry once then give up
+            if "connection" in err or "timeout" in err or "network" in err:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                return _fallback("connection")
+
+            # Unknown error — return fallback immediately
+            return _fallback("unknown")
+
+    return _fallback("rate_limit")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTES GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Level-specific instruction modifiers
 _LEVEL_GUIDE = {
     "Beginner":     "Simple language, no jargon, everyday analogies, explain from scratch.",
     "Intermediate": "Assume basic knowledge; use technical terms briefly.",
     "Advanced":     "Full depth, edge cases, nuances, advanced applications.",
 }
 
-# Goal-specific output format templates
 _GOAL_FORMAT = {
     "Concept Learning": (
         "## 📖 What is {topic}?\n[2-3 sentence definition]\n\n"
@@ -137,14 +262,18 @@ _GOAL_FORMAT = {
 
 def generate_notes(topic: str, level: str, goal: str, extra_ctx: str = "") -> str:
     """Generate structured study notes tailored to topic, level, and goal."""
+    is_valid, result = validate_topic(topic)
+    if not is_valid:
+        return f"⚠️ {result}"
+
     level_guide = _LEVEL_GUIDE.get(level, "")
-    fmt = _GOAL_FORMAT.get(goal, _GOAL_FORMAT["Concept Learning"]).replace("{topic}", topic)
+    fmt = _GOAL_FORMAT.get(goal, _GOAL_FORMAT["Concept Learning"]).replace("{topic}", result)
     ctx_block = f"\n\nUSE THIS CONTEXT:\n{extra_ctx[:1500]}" if extra_ctx else ""
 
     prompt = (
         f"Generate HIGHLY SPECIFIC study notes.\n"
-        f"Topic: {topic}\nLevel: {level} — {level_guide}\nGoal: {goal}\n\n"
-        f"RULES:\n- Name '{topic}' in every section\n"
+        f"Topic: {result}\nLevel: {level} — {level_guide}\nGoal: {goal}\n\n"
+        f"RULES:\n- Name '{result}' in every section\n"
         f"- Use REAL examples (real companies, real code, real numbers)\n"
         f"- ZERO generic filler\n\nFORMAT:\n{fmt}{ctx_block}"
     )
@@ -181,13 +310,17 @@ _QUIZ_LEVEL_GUIDE = {
 
 def generate_quiz(topic: str, level: str, context: str = "") -> str:
     """Generate 5 MCQ questions. Returns raw LLM text to be parsed by parse_quiz()."""
+    is_valid, result = validate_topic(topic)
+    if not is_valid:
+        return f"⚠️ {result}"
+
     guide = _QUIZ_LEVEL_GUIDE.get(level, "")
     ctx_block = f"\n\nBASE QUESTIONS ON:\n{context[:1200]}" if context else ""
 
     prompt = (
-        f"Generate exactly 5 MCQ questions on: {topic}\n"
+        f"Generate exactly 5 MCQ questions on: {result}\n"
         f"Level: {level} — {guide}\n\n"
-        f"RULES: Questions MUST be specific to {topic}. "
+        f"RULES: Questions MUST be specific to {result}. "
         "All 4 options must be plausible. Mix question types.\n\n"
         "FORMAT:\n\n"
         "Q1: [question]\nA) [opt]\nB) [opt]\nC) [opt]\nD) [opt]\nANS: [A/B/C/D]\n\n"
@@ -203,9 +336,6 @@ def parse_quiz(raw: str) -> List[Dict]:
     """
     Parse raw LLM quiz text into a list of question dicts.
     Pure function — no side effects, fully testable.
-
-    Returns:
-        List of {"q": str, "opts": [str,str,str,str], "ans": int (0-3)}
     """
     questions = []
     if not raw:
@@ -226,16 +356,15 @@ def parse_quiz(raw: str) -> List[Dict]:
                 if opt_match:
                     opts.append(opt_match.group(2).strip())
                 elif re.match(r"^ANS", line, re.I):
-                    # Match "ANS: B", "ANSWER: C", "ANS:B" etc.
                     found = re.search(r"\b([A-D])\b", line, re.I)
                     if found:
                         ans = found.group(1).upper()
 
             if len(opts) == 4 and q_text:
                 questions.append({
-                    "q": q_text,
+                    "q":    q_text,
                     "opts": opts,
-                    "ans": {"A": 0, "B": 1, "C": 2, "D": 3}.get(ans, 0),
+                    "ans":  {"A": 0, "B": 1, "C": 2, "D": 3}.get(ans, 0),
                 })
     except Exception:
         pass
@@ -282,11 +411,15 @@ _IQ_LEVEL_GUIDE = {
 
 def generate_important_questions(topic: str, level: str, count: int = 6) -> str:
     """Generate exam-relevant subjective questions."""
+    is_valid, result = validate_topic(topic)
+    if not is_valid:
+        return f"⚠️ {result}"
+
     guide = _IQ_LEVEL_GUIDE.get(level, "")
     prompt = (
-        f"Generate {count} important exam questions on: {topic}\n"
+        f"Generate {count} important exam questions on: {result}\n"
         f"Level: {level} — {guide}\n\n"
-        f"RULES: Questions must be concept-heavy. No yes/no. Specific to {topic}.\n\n"
+        f"RULES: Questions must be concept-heavy. No yes/no. Specific to {result}.\n\n"
         f"FORMAT:\nQ1: [question]\nType: [Conceptual/Analytical/Applied]\nLength: [Short/Medium/Long]\n\n"
         f"Continue for all {count} questions."
     )
@@ -328,11 +461,19 @@ def parse_questions(raw: str) -> List[Dict]:
 
 def evaluate_answer(question: str, user_answer: str, topic: str, level: str) -> str:
     """Evaluate a student's written answer with rubric scoring."""
+    is_valid, result = validate_answer(user_answer)
+    if not is_valid:
+        return f"⚠️ {result}"
+
+    is_valid_q, clean_q = validate_topic(question)
+    if not is_valid_q:
+        return f"⚠️ {clean_q}"
+
     prompt = (
         f"Evaluate this student answer.\n\n"
         f"Topic: {topic} | Level: {level}\n"
-        f"Question: {question}\n\n"
-        f"Student Answer:\n{user_answer[:2000]}\n\n"
+        f"Question: {clean_q}\n\n"
+        f"Student Answer:\n{result[:2000]}\n\n"
         "## 📊 Score\n[X/10 — be precise and fair]\n\n"
         "## ✅ Strengths\n[What the student got right — specific]\n\n"
         "## ❌ Weaknesses\n[What is wrong or missing — specific]\n\n"
@@ -369,47 +510,40 @@ def tutor_chat(
     past_chats: Optional[List[Dict]] = None,
     rag_context: str = "",
 ) -> str:
-    """Generate a tutor response personalised to the student's profile.
-    If rag_context is provided, the LLM answers grounded in the student's own notes.
-    """
+    """Generate a tutor response personalised to the student's profile."""
+    is_valid, clean_input = validate_chat_input(user_input)
+    if not is_valid:
+        return f"⚠️ {clean_input}"
+
     mastery = profile.get("mastery_score", 0)
-    trend = profile.get("trend_label", "N/A")
+    trend   = profile.get("trend_label", "N/A")
     weak_topics = profile.get("weak_topics", [])
 
-    # Adapt explanation style to mastery level
     if mastery < 40:
         style = "intuition-first with analogies and step-by-step breakdowns"
-        tone = "Student is at foundational level — be encouraging and use very simple language."
+        tone  = "Student is at foundational level — be encouraging and use very simple language."
     elif mastery < 70:
         style = "clear explanations with technical terms and concrete examples"
-        tone = "Student has intermediate understanding — balance clarity with depth."
+        tone  = "Student has intermediate understanding — balance clarity with depth."
     else:
         style = "deep technical explanations with edge cases"
-        tone = "Student has strong mastery — go deep and challenge them."
+        tone  = "Student has strong mastery — go deep and challenge them."
 
-    # Recent conversation context (last 3 exchanges)
     recent = "".join(
         f"{'Student' if m['role'] == 'user' else 'Tutor'}: {m['text'][:150]}\n"
         for m in chat_history[-6:]
     )
-
-    # Long-term memory context
     memory = "".join(
         f"- Student asked: {(c.get('user') or '')[:80]}\n"
         for c in (past_chats or [])[:3]
     )
-
-    # Weak area context
     weak_ctx = ""
     if weak_topics:
         weak_ctx += f"Weak topics: {', '.join(weak_topics[:3])}.\n"
     if weak_areas:
         weak_ctx += f"Weak questions: {', '.join(wa[:40] for wa in weak_areas[:2])}.\n"
 
-    stag = "Student appears stuck — suggest a different approach.\n" if profile.get("stagnation") else ""
-
-    # Pre-compute all variable parts before building prompt string
-    # (avoids backslash/quote inside f-string expressions — Python <3.12 compat)
+    stag        = "Student appears stuck — suggest a different approach.\n" if profile.get("stagnation") else ""
     topic_str   = topic or "General"
     memory_part = ("MEMORY:\n" + memory + "\n") if memory else ""
     rag_part    = (rag_context + "\n\n")         if rag_context else ""
@@ -420,10 +554,9 @@ def tutor_chat(
         "- Topic: " + topic_str + "\n"
         "- Level: " + level + " | Mastery: " + str(mastery) + "% | Trend: " + trend + "\n"
         + weak_ctx + stag + tone + "\n\n"
-        + memory_part
-        + rag_part
+        + memory_part + rag_part
         + "RECENT CONVERSATION:\n" + recent_part + "\n\n"
-        + "STUDENT ASKS: " + user_input + "\n\n"
+        + "STUDENT ASKS: " + clean_input + "\n\n"
         "RESPOND IN THIS EXACT STRUCTURE:\n\n"
         "**Direct Answer:**\n[1-2 sentences]\n\n"
         "**Explanation:**\n[Use " + style + "] — specific to '" + topic_str + "'\n\n"
@@ -443,9 +576,9 @@ def tutor_post_quiz(
     level: str,
 ) -> str:
     """Short tutor message shown immediately after a quiz submission."""
-    pct = int(correct / total * 100) if total else 0
+    pct        = int(correct / total * 100) if total else 0
     wrong_text = "\n".join(f"- {q}" for q in wrong[:3]) if wrong else "None"
-    weak_text = ", ".join(weak_topics[:3]) if weak_topics else "None"
+    weak_text  = ", ".join(weak_topics[:3]) if weak_topics else "None"
 
     prompt = (
         f"AI Tutor response after quiz on: {topic}\n"
@@ -490,19 +623,23 @@ def generate_study_plan(
     profile: Dict,
 ) -> str:
     """Generate an AI-written multi-day study plan."""
+    is_valid, result = validate_topic(topic)
+    if not is_valid:
+        return f"⚠️ {result}"
+
     weak_text = ", ".join(weak_topics[:4]) if weak_topics else "None"
-    mastery = profile.get("mastery_score", 0)
+    mastery   = profile.get("mastery_score", 0)
 
     prompt = (
         f"Create a SPECIFIC {days}-day study plan.\n"
-        f"Topic: {topic} | Level: {level} | Goal: {goal}\n"
+        f"Topic: {result} | Level: {level} | Goal: {goal}\n"
         f"Mastery: {mastery}% | Daily: {daily_hours}h | Weak: {weak_text}\n\n"
-        f"## 📅 {days}-Day Plan for {topic}\n\n"
+        f"## 📅 {days}-Day Plan for {result}\n\n"
         "Each day: main task + video search query + practice + time allocation.\n\n"
         f"## 📌 Milestones\n[Day 3, {days // 2}, {days}]\n\n"
         "## ✅ Success Criteria\n[3 measurable outcomes]\n\n"
         "## 💡 Daily Tips\n[2-3 motivational study reminders]\n\n"
-        f"Make tasks SMALL, ACHIEVABLE, SPECIFIC to {topic}."
+        f"Make tasks SMALL, ACHIEVABLE, SPECIFIC to {result}."
     )
     return _call(prompt, max_tokens=1100, temperature=0.4)
 

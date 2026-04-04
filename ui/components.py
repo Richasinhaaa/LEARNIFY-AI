@@ -8,16 +8,19 @@
 
 import streamlit as st
 from datetime import datetime
+from services.llm_service import validate_topic, validate_answer, validate_chat_input
 
 
-# ── Navigation helpers ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# NAVIGATION HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def back_btn(tip: str, key: str) -> None:
     """Render a 'Back to Dashboard' button. Sets a tip message on click."""
     if st.button("⬅️ Back to Dashboard", key=key):
-        st.session_state.show_tip     = True
-        st.session_state.tip_message  = tip
-        st.session_state.active_page  = "dashboard"
+        st.session_state.show_tip    = True
+        st.session_state.tip_message = tip
+        st.session_state.active_page = "dashboard"
         st.rerun()
 
 
@@ -30,7 +33,9 @@ def section_header(title: str, subtitle: str = "") -> None:
     )
 
 
-# ── Topic banner ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# BANNERS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def topic_banner() -> None:
     """Show the current topic/level/goal as an info strip if a topic is set."""
@@ -42,8 +47,6 @@ def topic_banner() -> None:
         )
 
 
-# ── Tip banner ────────────────────────────────────────────────────────────────
-
 def tip_banner() -> None:
     """Show and clear the one-shot tip message set by back_btn."""
     if st.session_state.show_tip:
@@ -51,21 +54,91 @@ def tip_banner() -> None:
         st.session_state.show_tip = False
 
 
-# ── Score circle ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# VALIDATED INPUTS
+# Wraps st.text_input / st.text_area with built-in validation + error display.
+# Returns (value, is_valid) — pages just check is_valid before calling LLM.
+# ══════════════════════════════════════════════════════════════════════════════
 
-def score_circle(pct: int) -> None:
-    """Render the circular score badge."""
-    st.markdown(
-        f"<div class='card' style='text-align:center;padding:2rem;'>"
-        f"<div class='score-circle'>"
-        f"<div class='score-num'>{pct}%</div>"
-        f"<div class='score-lbl'>Score</div>"
-        f"</div></div>",
-        unsafe_allow_html=True,
+def topic_input(
+    placeholder: str = "e.g. Gradient Descent, SQL JOINs...",
+    value: str = "",
+    key: str = "topic_input",
+    label: str = "",
+) -> tuple:
+    """
+    Validated topic text input.
+    Returns (cleaned_value: str, is_valid: bool).
+    Shows an inline error automatically if invalid.
+    """
+    raw = st.text_input(
+        label or "",
+        placeholder=placeholder,
+        value=value,
+        label_visibility="collapsed" if not label else "visible",
+        key=key,
     )
+    if not raw:
+        return "", False
+    is_valid, result = validate_topic(raw)
+    if not is_valid:
+        st.error(f"⚠️ {result}")
+        return raw, False
+    return result, True
 
 
-# ── Stat card ─────────────────────────────────────────────────────────────────
+def answer_input(
+    placeholder: str = "Type your answer here...",
+    height: int = 200,
+    key: str = "answer_input",
+) -> tuple:
+    """
+    Validated answer text area.
+    Returns (cleaned_value: str, is_valid: bool).
+    Shows an inline error automatically if invalid.
+    """
+    raw = st.text_area(
+        "",
+        placeholder=placeholder,
+        height=height,
+        label_visibility="collapsed",
+        key=key,
+    )
+    if not raw:
+        return "", False
+    is_valid, result = validate_answer(raw)
+    if not is_valid:
+        st.error(f"⚠️ {result}")
+        return raw, False
+    return result, True
+
+
+def chat_input_field(
+    placeholder: str = "Ask your tutor...",
+    key: str = "chat_input",
+) -> tuple:
+    """
+    Validated chat text input.
+    Returns (cleaned_value: str, is_valid: bool).
+    """
+    raw = st.text_input(
+        "",
+        placeholder=placeholder,
+        label_visibility="collapsed",
+        key=key,
+    )
+    if not raw:
+        return "", False
+    is_valid, result = validate_chat_input(raw)
+    if not is_valid:
+        st.error(f"⚠️ {result}")
+        return raw, False
+    return result, True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# METRIC CARDS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def stat_card(value: str, label: str, sub: str = "") -> None:
     """Render a single metric stat card."""
@@ -79,16 +152,36 @@ def stat_card(value: str, label: str, sub: str = "") -> None:
     )
 
 
-# ── Insight card ──────────────────────────────────────────────────────────────
+def score_circle(pct: int) -> None:
+    """Render the circular score badge."""
+    st.markdown(
+        f"<div class='card' style='text-align:center;padding:2rem;'>"
+        f"<div class='score-circle'>"
+        f"<div class='score-num'>{pct}%</div>"
+        f"<div class='score-lbl'>Score</div>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
 
-def insight_card(icon: str, label: str, value: str, color: str, sub: str = "", bar_pct: int = 0) -> None:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INSIGHT / INFO CARDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def insight_card(
+    icon: str,
+    label: str,
+    value: str,
+    color: str,
+    sub: str = "",
+    bar_pct: int = 0,
+) -> None:
     """Render a coloured insight card with optional progress bar."""
     bar = (
         f"<div style='height:6px;background:#E2E8F0;border-radius:4px;margin-top:8px;'>"
-        f"<div style='height:6px;border-radius:4px;width:{min(bar_pct,100)}%;background:{color};'></div>"
+        f"<div style='height:6px;border-radius:4px;width:{min(bar_pct, 100)}%;background:{color};'></div>"
         f"</div>"
     ) if bar_pct else ""
-    # Pre-compute optional sub label (avoids quotes inside f-string — Python <3.12 compat)
     sub_html = (
         "<div style='font-size:12px;color:#94A3B8;margin-top:4px;'>" + sub + "</div>"
     ) if sub else ""
@@ -96,13 +189,10 @@ def insight_card(icon: str, label: str, value: str, color: str, sub: str = "", b
         f"<div class='insight-card'>"
         f"<div style='font-size:11px;color:#94A3B8;margin-bottom:5px;'>{icon} {label}</div>"
         f"<div style='font-size:17px;font-weight:700;color:{color};'>{value}</div>"
-        f"{sub_html}"
-        f"{bar}</div>",
+        f"{sub_html}{bar}</div>",
         unsafe_allow_html=True,
     )
 
-
-# ── Intel (dark) box ──────────────────────────────────────────────────────────
 
 def intel_box(title: str, body_html: str) -> None:
     """Render the dark intelligence explanation box."""
@@ -115,8 +205,6 @@ def intel_box(title: str, body_html: str) -> None:
     )
 
 
-# ── Connector card ────────────────────────────────────────────────────────────
-
 def connector_card(title: str, body: str) -> None:
     """Render the blue/green connector card between sections."""
     st.markdown(
@@ -128,18 +216,36 @@ def connector_card(title: str, body: str) -> None:
     )
 
 
-# ── Quiz answer review ────────────────────────────────────────────────────────
+def badge(text: str, color: str = "blue") -> str:
+    """Return a badge HTML string. Use inside intel_box or markdown calls."""
+    return f"<span class='badge b-{color}'>{text}</span>"
+
+
+def plan_card(content: str) -> None:
+    """Render a purple plan card (used for AI analysis output)."""
+    st.markdown(
+        f"<div class='plan-card'>{content}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# QUIZ COMPONENTS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def quiz_answer_row(question: dict, user_answer_idx: int) -> None:
     """Render a single answered quiz question with correct/wrong styling."""
-    is_right   = user_answer_idx == question["ans"]
-    bg         = "#ECFDF5" if is_right else "#FEF2F2"
-    border     = "#059669" if is_right else "#DC2626"
-    icon       = "✅" if is_right else "❌"
-    user_text  = question["opts"][user_answer_idx] if user_answer_idx != -1 else "Not answered"
+    is_right    = user_answer_idx == question["ans"]
+    bg          = "#ECFDF5" if is_right else "#FEF2F2"
+    border      = "#059669" if is_right else "#DC2626"
+    icon        = "✅" if is_right else "❌"
+    user_text   = question["opts"][user_answer_idx] if user_answer_idx != -1 else "Not answered"
     correct_line = (
         "" if is_right
-        else f"<div style='font-size:13px;color:#059669;margin-top:3px;'>✓ Correct: {question['opts'][question['ans']]}</div>"
+        else (
+            f"<div style='font-size:13px;color:#059669;margin-top:3px;'>"
+            f"✓ Correct: {question['opts'][question['ans']]}</div>"
+        )
     )
     st.markdown(
         f"<div style='padding:12px;border-radius:12px;margin-bottom:8px;"
@@ -151,23 +257,53 @@ def quiz_answer_row(question: dict, user_answer_idx: int) -> None:
     )
 
 
-# ── Dependency card ───────────────────────────────────────────────────────────
+def question_card(index: int, question: dict) -> None:
+    """Render an important question card with type and length badges."""
+    type_colors = {
+        "Conceptual": "b-blue",
+        "Analytical":  "b-purple",
+        "Applied":     "b-green",
+        "Evaluative":  "b-amber",
+    }
+    color_class = type_colors.get(
+        question.get("type", "Conceptual").split("/")[0].strip(), "b-gray"
+    )
+    st.markdown(
+        f"<div class='q-card'>"
+        f"<div style='font-size:14px;font-weight:600;color:#0F172A;'>Q{index}. {question['q']}</div>"
+        f"<div class='q-type'>"
+        f"<span class='badge {color_class}'>{question.get('type', 'Conceptual')}</span>"
+        f"<span class='badge b-gray'>{question.get('length', 'Medium')} answer</span>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPENDENCY / PREREQUISITE CARDS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def dep_card(topic: str, covered: bool) -> None:
     """Render a prerequisite card — green if covered, red if missing."""
     if covered:
         st.markdown(
-            f"<div class='strong-card'><div style='font-size:13px;color:#065F46;'>✅ {topic.title()}</div></div>",
+            f"<div class='strong-card'>"
+            f"<div style='font-size:13px;color:#065F46;'>✅ {topic.title()}</div>"
+            f"</div>",
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            f"<div class='weak-card'><div style='font-size:13px;color:#7F1D1D;'>❌ {topic.title()}</div></div>",
+            f"<div class='weak-card'>"
+            f"<div style='font-size:13px;color:#7F1D1D;'>❌ {topic.title()}</div>"
+            f"</div>",
             unsafe_allow_html=True,
         )
 
 
-# ── File extraction utilities ─────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# FILE EXTRACTION UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
 
 def extract_pdf(file_bytes: bytes):
     """Extract text from PDF bytes. Returns (text, error_str)."""
@@ -193,7 +329,9 @@ def extract_txt(file_bytes: bytes):
     return None, "Could not decode file"
 
 
-# ── Quiz state reset ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# QUIZ STATE
+# ══════════════════════════════════════════════════════════════════════════════
 
 def reset_quiz() -> None:
     """Clear all quiz-related session state keys."""
