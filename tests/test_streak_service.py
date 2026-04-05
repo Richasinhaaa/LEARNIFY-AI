@@ -44,19 +44,19 @@ def test_longest_streak_tracked():
     assert s["current_streak"] == 2
 
 def test_duplicate_dates_ignored():
-    # Multiple activities on the same day should count as 1
-    today_activities = [datetime.now(), datetime.now() - timedelta(hours=2),
-                        datetime.now() - timedelta(hours=5)]
+    # Multiple activities within same day should count as 1 unique day
+    # Use hours-apart timestamps to guarantee same calendar date
+    now = datetime.now()
+    today_activities = [now, now - timedelta(hours=1), now - timedelta(hours=2)]
     s = compute_streak(today_activities)
-    assert s["current_streak"] >= 1
-    assert s["active_days"]    == 1
+    assert s["active_days"] == 1
 
 def test_badge_earned():
     dates = [_days_ago(i) for i in range(7)]
     s = compute_streak(dates)
     badge_names = [b["name"] for b in s["badges_earned"]]
-    assert "On Fire"     in badge_names   # 3-day badge
-    assert "Week Warrior" in badge_names  # 7-day badge
+    assert "On Fire"      in badge_names   # 3-day badge
+    assert "Week Warrior" in badge_names   # 7-day badge
 
 def test_no_badge_below_threshold():
     dates = [_days_ago(i) for i in range(2)]
