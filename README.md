@@ -1,5 +1,5 @@
 # 🎓 LEARNIFY AI
-
+updated project structure
 > **Personalized AI Learning · Resource Intelligence Engine · Adaptive Tutor**
 
 [![CI](https://github.com/Richasinhaaa/LEARNIFY-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Richasinhaaa/LEARNIFY-AI/actions)
