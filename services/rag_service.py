@@ -29,17 +29,19 @@ import hashlib
 from typing import List, Optional, Tuple
 
 # ── Optional imports with graceful degradation ────────────────────────────────
+# Uses broad Exception catch because chromadb can crash at C-level (protobuf
+# conflict) which bypasses ImportError on some platforms (Streamlit Cloud).
 try:
     import chromadb
     from chromadb.config import Settings
     CHROMA_AVAILABLE = True
-except ImportError:
+except Exception:
     CHROMA_AVAILABLE = False
 
 try:
     from sentence_transformers import SentenceTransformer
     ST_AVAILABLE = True
-except ImportError:
+except Exception:
     ST_AVAILABLE = False
 
 RAG_AVAILABLE = CHROMA_AVAILABLE and ST_AVAILABLE
