@@ -42,7 +42,7 @@ def upsert_user(
 ) -> None:
     """Create or update a user document. Silently no-ops if DB unavailable."""
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.users.update_one(
@@ -65,7 +65,7 @@ def upsert_user(
 def load_user(email: str) -> Dict[str, Any]:
     """Return user document dict, or empty dict if not found / DB unavailable."""
     db = _db()
-    if not db:
+    if db is None:
         return {}
     try:
         return db.users.find_one({"email": email}) or {}
@@ -87,7 +87,7 @@ def save_note(
 ) -> None:
     """Upsert a note for (email, topic). One note per topic per user."""
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.notes.update_one(
@@ -108,7 +108,7 @@ def save_note(
 def get_notes(email: str, limit: int = 10) -> List[Dict]:
     """Return the most recently updated notes for a user."""
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         return list(
@@ -123,7 +123,7 @@ def get_notes(email: str, limit: int = 10) -> List[Dict]:
 def get_studied_topics(email: str) -> List[str]:
     """Return list of distinct topic names the user has saved notes for."""
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         return db.notes.distinct("topic", {"email": email})
@@ -144,7 +144,7 @@ def save_quiz(
 ) -> None:
     """Insert a new quiz attempt. Each attempt is a separate document."""
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         pct = int(correct / total * 100) if total else 0
@@ -164,7 +164,7 @@ def save_quiz(
 def get_quizzes(email: str, limit: int = 50) -> List[Dict]:
     """Return recent quiz attempts for analytics computation."""
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         return list(
@@ -189,7 +189,7 @@ def save_eval(
 ) -> None:
     """Store a subjective answer evaluation result."""
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.evals.insert_one({
@@ -206,7 +206,7 @@ def save_eval(
 
 def get_evals(email: str, limit: int = 10) -> List[Dict]:
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         return list(
@@ -224,7 +224,7 @@ def get_evals(email: str, limit: int = 10) -> List[Dict]:
 
 def save_chat(email: str, topic: str, user_msg: str, bot_msg: str) -> None:
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.chats.insert_one({
@@ -240,7 +240,7 @@ def save_chat(email: str, topic: str, user_msg: str, bot_msg: str) -> None:
 
 def get_chats(email: str, topic: str = "", limit: int = 6) -> List[Dict]:
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         query: Dict[str, Any] = {"email": email}
@@ -261,7 +261,7 @@ def get_chats(email: str, topic: str = "", limit: int = 6) -> List[Dict]:
 
 def save_plan(email: str, topic: str, plan_text: str, days: int) -> None:
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.plans.update_one(
@@ -275,7 +275,7 @@ def save_plan(email: str, topic: str, plan_text: str, days: int) -> None:
 
 def get_plans(email: str) -> List[Dict]:
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         return list(
@@ -298,7 +298,7 @@ def get_progress(email: str) -> Dict[str, Any]:
     callers can cache with st.cache_data if needed.
     """
     db = _db()
-    if not db:
+    if db is None:
         return _empty_progress()
 
     try:
@@ -405,7 +405,7 @@ def _empty_progress() -> Dict[str, Any]:
 def upsert_srs_card(email: str, card: Dict[str, Any]) -> None:
     """Create or update an SRS card for (email, topic)."""
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.srs_cards.update_one(
@@ -420,7 +420,7 @@ def upsert_srs_card(email: str, card: Dict[str, Any]) -> None:
 def get_srs_cards(email: str) -> List[Dict]:
     """Return all SRS cards for a user."""
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         return list(db.srs_cards.find({"email": email}))
@@ -431,7 +431,7 @@ def get_srs_cards(email: str) -> List[Dict]:
 def get_srs_card(email: str, topic: str) -> Optional[Dict[str, Any]]:
     """Return a single SRS card for (email, topic), or None."""
     db = _db()
-    if not db:
+    if db is None:
         return None
     try:
         return db.srs_cards.find_one({"email": email, "topic": topic})
@@ -449,7 +449,7 @@ def log_activity(email: str) -> None:
     Called whenever a quiz is completed or notes are generated.
     """
     db = _db()
-    if not db:
+    if db is None:
         return
     try:
         db.activity.insert_one({
@@ -463,7 +463,7 @@ def log_activity(email: str) -> None:
 def get_activity_dates(email: str, limit: int = 200) -> List[datetime]:
     """Return list of activity datetimes for streak computation."""
     db = _db()
-    if not db:
+    if db is None:
         return []
     try:
         docs = list(
