@@ -185,7 +185,7 @@ def _call(
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": system or _DEFAULT_SYSTEM},
                     {"role": "user",   "content": prompt},
