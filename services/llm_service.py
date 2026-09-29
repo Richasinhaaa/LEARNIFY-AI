@@ -117,6 +117,7 @@ def _get_client():
             try:
                 _client = Groq(api_key=api_key)
             except Exception:
+                 print(f"GROQ ERROR: {type(e).__name__}: {e}", flush=True)
                 _client = None
     return _client
 
