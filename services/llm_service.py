@@ -117,7 +117,6 @@ def _get_client():
             try:
                 _client = Groq(api_key=api_key)
             except Exception:
-                 print(f"GROQ ERROR: {type(e).__name__}: {e}", flush=True)
                 _client = None
     return _client
 
@@ -197,6 +196,7 @@ def _call(
             return response.choices[0].message.content.strip()
 
         except Exception as e:
+            print(f"GROQ ERROR (attempt {attempt+1}): {type(e).__name__}: {e}", flush=True)
             err = str(e).lower()
 
             # Rate limit — wait with exponential backoff and retry
